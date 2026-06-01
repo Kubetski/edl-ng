@@ -752,7 +752,9 @@ internal sealed class EdlManager(GlobalOptionsBinder globalOptions) : IDisposabl
         }
     }
 
-    public void FlushForResponse()
+    public string GetDevicePath() => _devicePath ?? throw new InvalidOperationException("No device path set. Call FindDevice first.");
+
+        public void FlushForResponse()
     {
         var gotResponse = false;
         try

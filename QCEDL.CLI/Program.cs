@@ -1,4 +1,4 @@
-﻿using System.CommandLine;
+using System.CommandLine;
 using System.Globalization;
 using QCEDL.CLI.Commands;
 using QCEDL.CLI.Core;
@@ -139,6 +139,9 @@ rootCommand.AddCommand(ErasePartitionCommand.Create(globalOptionsBinder));
 rootCommand.AddCommand(EraseSectorCommand.Create(globalOptionsBinder));
 rootCommand.AddCommand(ProvisionCommand.Create(globalOptionsBinder));
 rootCommand.AddCommand(RawProgramCommand.Create(globalOptionsBinder));
+rootCommand.AddCommand(UnlockBootloaderCommand.Create(globalOptionsBinder));
+rootCommand.AddCommand(OemUnlockCommand.Create(globalOptionsBinder));
+rootCommand.AddCommand(KgCommand.Create(globalOptionsBinder));
 // ... etc ...
 
 // --- Default Handler (Show Help if no command given) ---

@@ -1,8 +1,8 @@
-# edl-ng
+﻿# edl-ng
 
 **A modern, user-friendly tool for interacting with Qualcomm devices in Emergency Download (EDL) mode.**
 
-Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols, enabling device flashing, partition management, and low-level device interaction.
+Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols, enabling device flashing, partition management, bootloader unlocking, and low-level device interaction.
 
 ## Features
 
@@ -22,6 +22,9 @@ Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols,
     * Write file to raw sectors.
   * **Device Control:** Reset or power off the device.
   * Get detailed storage information (sector size, LUN count).
+* **Bootloader Unlock:** Unlock bootloader via devinfo partition edit over EDL.
+* **OEM Unlock:** Enable OEM unlock toggle via EDL partition patch.
+* **KG Scanner:** Scan LUNs for Samsung Knox Guard related partitions.
 * **Flexible Device Detection:**
   * Specify USB VID/PID.
   * Uses COM ports on Windows or LibUsbDotNet (for all platforms, especially Linux/macOS).
@@ -30,102 +33,161 @@ Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols,
   * Set maximum payload size for Firehose.
   * Adjust logging levels.
 
+## Commands
+
+### Standard EDL Commands
+| Command | Description |
+|---------|-------------|
+| `upload-loader` | Upload Firehose programmer via Sahara |
+| `printgpt` | Print GPT from device |
+| `read-part <name> <file>` | Read partition to file |
+| `read-sector <start> <count> <file>` | Read sectors to file |
+| `read-lun <file>` | Read entire LUN to file |
+| `dump-rawprogram <dir>` | Dump all partitions + generate rawprogram XML |
+| `write-part <name> <file>` | Write file to partition |
+| `write-sector <start> <file>` | Write file to sectors |
+| `erase-part <name>` | Erase partition |
+| `erase-sector <start> <count>` | Erase sectors |
+| `provision <xmlfile>` | UFS provisioning |
+| `rawprogram <patterns>` | Flash using rawprogram XML files |
+| `reset` | Reset/power off device |
+
+### Bootloader & Security Commands (New)
+| Command | Description |
+|---------|-------------|
+| `unlock-bootloader` | Unlock/relock bootloader via devinfo partition edit |
+| `oem-unlock` | Attempt OEM unlock enable via Sahara/Firehose |
+| `kg scan` | Scan all LUNs for KG-related partitions |
+| `kg read <partition>` | Read and display KG state from a partition |
+
 ## Usage
 
-`edl-ng` can be downloaded from:
+```bash
+edl-ng [global-options] <command> [command-options-and-arguments]
+```
 
-- [Releases](https://github.com/strongtz/edl-ng/releases)
-- [Arch Linux CN repo](https://www.archlinuxcn.org/archlinux-cn-repo-and-mirror/) [Maintainer = @Cryolitia]
+### Global Options
+| Option | Description |
+|--------|-------------|
+| `--loader, -l` | Path to Firehose programmer .elf |
+| `--vid` | USB Vendor ID (hex, e.g. 0x05C6) |
+| `--pid` | USB Product ID (hex, e.g. 0x9008) |
+| `--memory` | Storage type (UFS, Sdcc, Spinor, Nand, Nvme) |
+| `--loglevel` | Logging level (Trace, Debug, Info, Warning, Error) |
+| `--maxpayload` | Max payload size for Firehose |
+| `--slot` | Slot number (0 or 1) |
+| `--hostdev-as-target` | Treat host device as target |
+| `--img-size` | Image size for host device mode |
+| `--radxa-wos-platform` | Radxa WoS backend (Windows only) |
 
-The general command structure is:
-`edl-ng [global-options] <command> [command-options-and-arguments]`
+## Bootloader Unlock Guide
 
-Run `edl-ng --help` for a full list of commands and options, or refer to the specific command help using `edl-ng <command> --help`.
+### Method 1: DevInfo Partition Unlock (Recommended)
 
-### Supported Commands
+**Works on:** Most Qualcomm devices with devinfo partition (pre-2018 MSM89xx, some newer).
+**Risk:** Low — only modifies the devinfo partition.
 
-* `upload-loader`: Connects in Sahara mode and uploads the specified Firehose loader. (e.g., qsahara_device_programmer.xml, xbl_s_devprg_ns.melf or prog_firehose_*.elf)
-* `printgpt`: Reads and prints the GPT from the device.
-* `read-part <partition_name> <filename>`: Reads a partition to a file.
-* `read-sector <start_sector> <num_sectors> <filename>`: Reads sectors to a file.
-* `read-lun <filename>`: Reads the entire LUN (all sectors) to a file.
-* `dump-rawprogram <dump_save_dir>`: Reads all partitions to individual files from a certain LUN and generates rawprogram XML file.
-* `write-part <partition_name> <filename>`: Writes data from a file to a partition.
-* `write-sector <start_sector> <filename>`: Writes data from a file to sectors.
-* `erase-part <partition_name>`: Erases a partition by name from the device.
-* `erase-sector <start_sector> <sectors>`: Erases a specified number of sectors from a given LUN and start LBA.
-* `provision <xmlfile>`: Performs UFS provisioning using an XML file.
-* `rawprogram <xmlfile_patterns>`: Processes rawprogramN.xml and patchN.xml files for flashing.
-* `reset`: Resets or powers off the device.
-  * `--mode <reset|off|edl>`: Reset mode (default: `reset`).
-  * `--delay <seconds>`: Delay before executing power command.
+```bash
+# 1. Put device in EDL mode (9008)
+# 2. Upload loader and unlock bootloader:
+edl-ng --loader prog_firehose_ddr.elf --memory UFS unlock-bootloader
 
-### Examples
+# 3. Verify: Check Developer Options for OEM Unlock toggle
+# 4. Reboot to Download Mode and confirm unlock:
+adb reboot download
+# Long press Vol Up at the unlock prompt
+```
 
-* **Flash a flat build to device using rawprogram XML files**
+**How it works:**
+The `devinfo` partition stores bootloader unlock state at specific offsets:
+- **Offset 0x10:** `01 00 00 00 00 00 00 00` = unlocked (byte 0x10 = 0x01)
+- **Offset 0x10:** `00 00 00 00 00 00 00 00` = locked (byte 0x10 = 0x00)
+- **Offset 0x08:** Set to `0x01` as secondary unlock flag
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf --memory UFS rawprogram rawprogram*.xml patch*.xml
-    ```
+The command reads the devinfo partition, applies the unlock pattern, and writes it back.
 
-* **Print GPT from LUN 0 (UFS memory):**
+**If unlock-bootloader says already unlocked but OEM toggle is missing:**
+```bash
+edl-ng --loader prog_firehose_ddr.elf --memory UFS unlock-bootloader --force
+```
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf --memory UFS printgpt --lun 0
-    ```
+**To relock:**
+```bash
+edl-ng --loader prog_firehose_ddr.elf --memory UFS unlock-bootloader --relock
+```
 
-* **Read the 'modem' partition from any LUN to `modem.bin`:**
+### Method 2: OEM Unlock via EDL (Experimental)
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf read-part modem modem.bin
-    ```
+**Works on:** Some Samsung/OnePlus devices.
+**Risk:** Moderate — may trigger EDL auth errors on newer SoCs.
 
-* **Write `modem.bin` to the 'modem' partition found in any LUN:**
+```bash
+edl-ng --loader prog_firehose_ddr.elf --memory UFS oem-unlock
+```
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf write-part modem modem.bin
-    ```
+This attempts to enable the OEM Unlock toggle by:
+1. Patching the devinfo partition (same as Method 1)
+2. Attempting Sahara EXECUTE command for OEM unlock (on compatible Sahara v2 devices)
 
-* **Read the entire LUN 0 to `lun0.bin`:**
+### Method 3: KG Neutralization via Partition Edit (Samsung)
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf --memory UFS read-lun lun0.bin --lun 0
-    ```
+**Works on:** Samsung devices with KG lock (states 0-3).
+**Risk:** Moderate — writing to wrong partition can brick.
 
-* **Dump all partitions from LUN 0 to directory and generate rawprogram XML:**
+#### Step 1: Scan for KG partitions
+```bash
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg scan
+```
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf --memory UFS dump-rawprogram ./partitions --lun 0
-    ```
+#### Step 2: Read KG state from a specific partition
+```bash
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg read persist
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg read param
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg read devinfo
+```
 
-    This will create partition files (e.g., `system.bin`, `vendor.bin`), GPT files (`gpt_main0.bin`, `gpt_backup0.bin`), and `rawprogram0.xml`.
+#### Step 3: Manually edit KG state (advanced)
+```bash
+# Read param partition
+edl-ng --loader prog_firehose_ddr.elf --memory UFS read-part param param.bin
 
-* **Write `lun0.bin` to the entire LUN 0:**
+# Hex-edit param.bin: change "kg_state=2" to "kg_state=3" (BROKEN)
+# Or null out the knox_guard entries
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf --memory UFS write-sector 0 lun0.bin --lun 0
-    ```
+# Write back
+edl-ng --loader prog_firehose_ddr.elf --memory UFS write-part param param.bin
+```
 
-* **Reboot the device:**
+### Method 4: RPMB Clear via Signed Loader (Paid Tools Only)
 
-    ```bash
-    edl-ng --loader prog_firehose_ddr.elf reset
-    ```
+**Works on:** All Samsung devices (hardware-level fix).
+**Risk:** Low if using genuine tool.
 
-### Verified Target Platforms
+RPMB (Replay Protected Memory Block) stores KG tokens at the hardware level. Clearing RPMB removes KG completely, but requires a signed Samsung loader which is only available through paid tools:
+- Chimera Tool (~$120/yr)
+- TSM Tool Pro (~$80/yr)
+- SamsungTool (~$100/yr)
+- Octoplus Samsung (~$90/yr)
 
-* Snapdragon 835 (MSM8998)
-* Dragonwing QCS6490
-* Dragonwing QCS8550
-* Snapdragon X Elite (SC8380)
+**Free alternative:** The devinfo unlock method (Method 1) combined with KnoxPatch (root module) achieves the same result without clearing RPMB.
 
-SoCs older than MSM8998 are not tested and may not yet be supported.
+## Putting Device in EDL Mode
 
-Devices with vendor customized DevPrg may not be supported as well.
+| Device | Method |
+|--------|--------|
+| Most Qualcomm | `adb reboot edl` (requires USB debugging) |
+| Samsung (older) | Vol Up + Vol Down + USB cable |
+| Samsung (newer) | `adb reboot edl` or EDL test points |
+| Xiaomi | `fastboot oem edl` or `fastboot reboot-edl` |
+| OnePlus | `adb reboot edl` or Vol Up + Vol Down + Power |
+| LG | Vol Up + USB cable |
+| Test points | Short EDL test points on motherboard |
+
+Verify: Device Manager shows "Qualcomm HS-USB QDLoader 9008" or "QUSB_BULK".
 
 ## Prerequisites
 
-* **.NET 9 SDK** (no need to install .NET runtime if using pre-built binaries).
+* **.NET 8/9 SDK** (no need to install .NET runtime if using pre-built binaries).
 * **Qualcomm USB Drivers:**
   * **Windows:** Both Qualcomm® USB Driver (QUD) and WinUSB driver (Zadig) are supported.
   * **Linux/macOS:** `libusb` is used. You may also need to configure udev rules on Linux to allow user access to the device.
@@ -134,19 +196,23 @@ Devices with vendor customized DevPrg may not be supported as well.
 ## Building
 
 1. Clone the repository.
-2. Ensure you have the .NET 9 SDK installed.
-3. Navigate to the solution directory (`/`) and run:
+2. Ensure you have the .NET 8 SDK installed.
+3. Build:
 
-    ```bash
-    dotnet build
-    ```
+```bash
+dotnet build QCEDL.CLI\QCEDL.CLI.csproj
+```
 
-4. The executable `edl-ng` will be located in `QCEDL.CLI/bin/<Configuration>/net9.0/<Platform>/`. For example: `QCEDL.CLI/bin/Debug/net9.0/win-x64/edl-ng`.
+4. The executable `edl-ng` will be located in `QCEDL.CLI/bin/<Configuration>/net8.0/`.
+
+## Resources & References
+
+- [Aleph Security: Exploiting Qualcomm EDL Programmers](https://alephsecurity.com/2018/01/22/qualcomm-edl-1/) — Foundational research on EDL/Firehose/Sahara
+- [Giovix92/EDLUnlock](https://github.com/Giovix92/EDLUnlock) — Batch-based devinfo unlock (MSM8953)
+- [lowendmains/edlunlock](https://github.com/lowendmains/edlunlock) — Shell-based devinfo unlock
+- [bkerler/edl](https://github.com/bkerler/edl) — Python EDL tool (inspiration)
+- [gus33000/QCEDL.NET](https://github.com/gus33000/QCEDL.NET) — Original .NET EDL implementation
 
 ## License
 
 This project is licensed under the MIT license.
-
-## Acknowledgments
-
-This project is inspired by [gus33000/QCEDL.NET](https://github.com/gus33000/QCEDL.NET) and [bkerler/edl](https://github.com/bkerler/edl).
