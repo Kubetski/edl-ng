@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text;
 using QCEDL.CLI.Core;
 using QCEDL.CLI.Helpers;
+using QCEDL.NET.PartitionTable;
 
 namespace QCEDL.CLI.Commands;
 
@@ -35,7 +36,11 @@ internal sealed class OemUnlockCommand
             for (uint lun = 0; lun <= 5; lun++)
             {
                 found = await manager.FindPartitionWithLunAsync("devinfo", lun);
-                if (found.HasValue) { Logging.Log($"Found devinfo on LUN {found.Value.lun}"); break; }
+                if (found.HasValue)
+                {
+                    Logging.Log($"Found devinfo on LUN {found.Value.lun}");
+                    break;
+                }
             }
 
             if (!found.HasValue)
@@ -44,7 +49,11 @@ internal sealed class OemUnlockCommand
                 for (uint lun = 0; lun <= 5; lun++)
                 {
                     found = await manager.FindPartitionWithLunAsync("persist", lun);
-                    if (found.HasValue) { Logging.Log($"Found persist on LUN {found.Value.lun}"); break; }
+                    if (found.HasValue)
+                    {
+                        Logging.Log($"Found persist on LUN {found.Value.lun}");
+                        break;
+                    }
                 }
             }
 
@@ -58,10 +67,10 @@ internal sealed class OemUnlockCommand
 
             var (part, lunIdx) = found.Value;
             var sectorSize = manager.GetSectorSize(lunIdx);
-            var sectorCount = (uint)(part.LastLba - part.FirstLba + 1);
+            var sectorCount = (uint)(part.LastLBA - part.FirstLBA + 1);
 
             Logging.Log($"Reading {sectorCount} sectors from {part.GetName()} on LUN {lunIdx}...");
-            var data = await manager.ReadSectorsAsync(lunIdx, part.FirstLba, sectorCount);
+            var data = await manager.ReadSectorsAsync(lunIdx, part.FirstLBA, sectorCount);
 
             if (data == null || data.Length < 0x20)
             {
@@ -69,25 +78,27 @@ internal sealed class OemUnlockCommand
                 return 1;
             }
 
-            // Show current state
             Logging.Log($"Current byte at offset 0x10: 0x{data[0x10]:X2}");
             Logging.Log($"Current byte at offset 0x08: 0x{data[0x08]:X2}");
 
             // Apply unlock pattern
             data[0x10] = 0x01;
-            for (int i = 0x11; i < 0x18 && i < data.Length; i++) data[i] = 0x00;
+            for (int i = 0x11; i < 0x18 && i < data.Length; i++)
+            {
+                data[i] = 0x00;
+            }
             data[0x08] = 0x01;
 
             Logging.Log("Unlock pattern applied. Writing back...");
             using var ms = new MemoryStream(data);
-            await manager.WriteSectorsFromStreamAsync(lunIdx, part.FirstLba, ms, data.Length,
+            await manager.WriteSectorsFromStreamAsync(lunIdx, part.FirstLBA, ms, data.Length,
                 padToSector: true, "oem_unlock.bin");
 
             Logging.Log("OEM unlock partition patched successfully!");
             Logging.Log("");
             Logging.Log("Next steps:");
             Logging.Log("1. Reboot device (edl-ng reset)");
-            Logging.Log("2. Check Settings → Developer Options → OEM Unlock toggle");
+            Logging.Log("2. Check Settings > Developer Options > OEM Unlock toggle");
             Logging.Log("3. If visible, enable it");
             Logging.Log("4. Reboot to Download Mode (adb reboot download)");
             Logging.Log("5. Long press Vol Up to confirm bootloader unlock");

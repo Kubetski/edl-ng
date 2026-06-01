@@ -1,8 +1,8 @@
-﻿using System.CommandLine;
+using System.CommandLine;
 using System.Text;
 using QCEDL.CLI.Core;
 using QCEDL.CLI.Helpers;
-using Qualcomm.EmergencyDownload.Layers.APSS.Firehose.Xml.Elements;
+using QCEDL.NET.PartitionTable;
 
 namespace QCEDL.CLI.Commands;
 
@@ -10,13 +10,14 @@ internal sealed class KgCommand
 {
     public static Command Create(GlobalOptionsBinder globalOptionsBinder)
     {
+        var partitionArg = new Argument<string>("partition", "Partition name (e.g., persist, param, devinfo)");
+
         var scanCommand = new Command("kg-scan", "Scan all LUNs for KG-related partitions (persist, param, devinfo, keystorage, etc.)");
         scanCommand.SetHandler(ExecuteScanAsync, globalOptionsBinder);
 
         var readCommand = new Command("kg-read", "Read and display KG state from a specific partition");
-        readCommand.AddArgument(new Argument<string>("partition", "Partition name (e.g., persist, param, devinfo)"));
-        readCommand.SetHandler(ExecuteReadAsync, globalOptionsBinder,
-            new Argument<string>("partition"));
+        readCommand.AddArgument(partitionArg);
+        readCommand.SetHandler(ExecuteReadAsync, globalOptionsBinder, partitionArg);
 
         var command = new Command("kg", "Knox Guard related operations for Samsung devices.");
         command.AddCommand(scanCommand);
@@ -42,7 +43,9 @@ internal sealed class KgCommand
             using var manager = new EdlManager(globalOptions);
             await manager.EnsureFirehoseModeAsync();
             if (!manager.IsDirectMode)
+            {
                 await manager.ConfigureFirehoseAsync();
+            }
 
             var foundAny = false;
 
@@ -54,21 +57,23 @@ internal sealed class KgCommand
                     if (part.HasValue)
                     {
                         foundAny = true;
-                        var sizeBytes = (part.Value.LastLba - part.Value.FirstLba + 1) * manager.GetSectorSize(lun);
-                        
-                        Logging.Log($"  [{kgName}] LUN {lun} | sectors {part.Value.FirstLba}-{part.Value.LastLba} | {sizeBytes:N0} bytes");
+                        var sizeBytes = (part.Value.LastLBA - part.Value.FirstLBA + 1) * manager.GetSectorSize(lun);
+
+                        Logging.Log($"  [{kgName}] LUN {lun} | sectors {part.Value.FirstLBA}-{part.Value.LastLBA} | {sizeBytes:N0} bytes");
 
                         // Read first sector to check for KG data
-                        var sectorData = await manager.ReadSectorsAsync(lun, part.Value.FirstLba, 1);
+                        var sectorData = await manager.ReadSectorsAsync(lun, part.Value.FirstLBA, 1);
                         if (sectorData != null && sectorData.Length > 0)
                         {
                             var text = Encoding.ASCII.GetString(sectorData);
                             var hasKgData = text.Contains("kg_state", StringComparison.OrdinalIgnoreCase) ||
                                             text.Contains("knox_guard", StringComparison.OrdinalIgnoreCase) ||
                                             text.Contains("knox", StringComparison.OrdinalIgnoreCase);
-                            
+
                             if (hasKgData)
-                                Logging.Log($"    ⚠ KG DATA DETECTED in first sector!");
+                            {
+                                Logging.Log($"    WARNING: KG DATA DETECTED in first sector!");
+                            }
                         }
                     }
                 }
@@ -93,13 +98,19 @@ internal sealed class KgCommand
             using var manager = new EdlManager(globalOptions);
             await manager.EnsureFirehoseModeAsync();
             if (!manager.IsDirectMode)
+            {
                 await manager.ConfigureFirehoseAsync();
+            }
 
             (GptPartition part, uint lun)? found = null;
             for (uint lun = 0; lun <= 5; lun++)
             {
                 found = await manager.FindPartitionWithLunAsync(partitionName, lun);
-                if (found.HasValue) { Logging.Log($"Found '{partitionName}' on LUN {found.Value.lun}"); break; }
+                if (found.HasValue)
+                {
+                    Logging.Log($"Found '{partitionName}' on LUN {found.Value.lun}");
+                    break;
+                }
             }
 
             if (!found.HasValue)
@@ -110,10 +121,10 @@ internal sealed class KgCommand
 
             var (partition, lunIdx) = found.Value;
             var sectorSize = manager.GetSectorSize(lunIdx);
-            var sectorCount = (uint)Math.Min(8, partition.LastLba - partition.FirstLba + 1);
+            var sectorCount = (uint)Math.Min(8, partition.LastLBA - partition.FirstLBA + 1);
 
             Logging.Log($"Reading {sectorCount} sectors from {partitionName}...");
-            var data = await manager.ReadSectorsAsync(lunIdx, partition.FirstLba, sectorCount);
+            var data = await manager.ReadSectorsAsync(lunIdx, partition.FirstLBA, sectorCount);
 
             if (data == null || data.Length == 0)
             {
@@ -125,9 +136,11 @@ internal sealed class KgCommand
             for (var i = 0; i < data.Length; i += 16)
             {
                 var hex = BitConverter.ToString(data, i, Math.Min(16, data.Length - i)).Replace('-', ' ');
-                var ascii = "";
+                var ascii = new StringBuilder();
                 for (var j = i; j < Math.Min(i + 16, data.Length); j++)
-                    ascii += data[j] >= 0x20 && data[j] <= 0x7E ? (char)data[j] : '.';
+                {
+                    _ = ascii.Append(data[j] >= 0x20 && data[j] <= 0x7E ? (char)data[j] : '.');
+                }
                 Logging.Log($"  {i:X8}  {hex,-47}  {ascii}");
             }
 
@@ -153,14 +166,18 @@ internal sealed class KgCommand
                 while ((idx = text.IndexOf(pattern, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
                 {
                     foundPatterns = true;
-                    var context = text.Substring(Math.Max(0, idx - 8), Math.Min(pattern.Length + 16, text.Length - Math.Max(0, idx - 8)));
+                    var contextStart = Math.Max(0, idx - 8);
+                    var contextLen = Math.Min(pattern.Length + 16, text.Length - contextStart);
+                    var context = text.Substring(contextStart, contextLen);
                     Logging.Log($"  [{description}] Found '{pattern}' at offset 0x{idx:X}: ...{context}...");
                     idx += pattern.Length;
                 }
             }
 
             if (!foundPatterns)
+            {
                 Logging.Log("  No KG-related patterns found in scanned sectors.");
+            }
 
             return 0;
         });

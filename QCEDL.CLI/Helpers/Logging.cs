@@ -11,7 +11,7 @@ public enum LogLevel
 
 internal static class Logging
 {
-    private static readonly Lock LockObj = new();
+    private static readonly object LockObj = new();
     public static LogLevel CurrentLogLevel { get; set; } = LogLevel.Info;
 
     public static void Log(string? message, LogLevel level = LogLevel.Info)

@@ -1,8 +1,8 @@
-﻿using System.CommandLine;
+using System.CommandLine;
+using System.Text;
 using QCEDL.CLI.Core;
 using QCEDL.CLI.Helpers;
-using Qualcomm.EmergencyDownload.Layers.APSS.Firehose;
-using Qualcomm.EmergencyDownload.Layers.APSS.Firehose.Xml.Elements;
+using QCEDL.NET.PartitionTable;
 
 namespace QCEDL.CLI.Commands;
 
@@ -64,10 +64,16 @@ internal sealed class UnlockBootloaderCommand
         {
             using var manager = new EdlManager(globalOptions);
             await manager.EnsureFirehoseModeAsync();
-            if (!manager.IsFirehoseMode) { Logging.Log("Not in Firehose mode.", LogLevel.Error); return 1; }
+            if (!manager.IsFirehoseMode)
+            {
+                Logging.Log("Not in Firehose mode.", LogLevel.Error);
+                return 1;
+            }
 
             if (!manager.IsDirectMode)
+            {
                 await manager.ConfigureFirehoseAsync();
+            }
 
             // Search for devinfo partition across LUNs
             var lunsToSearch = specifiedLun <= 5
@@ -79,7 +85,11 @@ internal sealed class UnlockBootloaderCommand
             {
                 Logging.Log($"Searching LUN {lun} for '{partitionName}'...");
                 found = await manager.FindPartitionWithLunAsync(partitionName, lun);
-                if (found.HasValue) { Logging.Log($"Found '{partitionName}' on LUN {found.Value.lun}"); break; }
+                if (found.HasValue)
+                {
+                    Logging.Log($"Found '{partitionName}' on LUN {found.Value.lun}");
+                    break;
+                }
             }
 
             if (!found.HasValue)
@@ -92,8 +102,8 @@ internal sealed class UnlockBootloaderCommand
 
             var (part, lunIdx) = found.Value;
             var sectorSize = manager.GetSectorSize(lunIdx);
-            var startLba = part.FirstLba;
-            var sectorCount = (uint)(part.LastLba - part.FirstLba + 1);
+            var startLba = part.FirstLBA;
+            var sectorCount = (uint)(part.LastLBA - part.FirstLBA + 1);
 
             Logging.Log($"Reading {partitionName} (LUN {lunIdx}, sectors {startLba}-{startLba + sectorCount - 1}, sector size {sectorSize})...");
 
@@ -112,17 +122,17 @@ internal sealed class UnlockBootloaderCommand
             for (var i = 0; i < Math.Min(64, data.Length); i += 16)
             {
                 var hex = BitConverter.ToString(data, i, Math.Min(16, data.Length - i)).Replace('-', ' ');
-                var ascii = "";
+                var ascii = new StringBuilder();
                 for (var j = i; j < Math.Min(i + 16, data.Length); j++)
-                    ascii += data[j] >= 0x20 && data[j] <= 0x7E ? (char)data[j] : '.';
+                {
+                    _ = ascii.Append(data[j] >= 0x20 && data[j] <= 0x7E ? (char)data[j] : '.');
+                }
                 Logging.Log($"  {i:X8}  {hex,-47}  {ascii}");
             }
 
             // Check current unlock state based on known patterns
-            // Pattern from lowendmains/edlunlock:
-            //   Offset 0x10: 01 00 00 00 = unlocked, 00 00 00 00 = locked
-            var byte10 = data.Length > 0x10 ? data[0x10] : 0;
-            var byte08 = data.Length > 0x08 ? data[0x08] : 0;
+            var byte10 = data.Length > 0x10 ? data[0x10] : (byte)0;
+            var byte08 = data.Length > 0x08 ? data[0x08] : (byte)0;
             var isUnlocked = byte10 == 0x01;
 
             if (isUnlocked && !forceUnlock)
@@ -137,15 +147,25 @@ internal sealed class UnlockBootloaderCommand
                 Logging.Log("=== RELOCKING bootloader ===");
                 // Set unlock bytes to locked state
                 for (var i = 0x10; i < 0x18 && i < data.Length; i++)
+                {
                     data[i] = 0x00;
+                }
                 data[0x08] = 0x00;
                 // Clear LOCK / UNLOCK string patterns
-                var lockStr = "LOCK"u8;
-                var unlockStr = "UNLOCK"u8;
+                var lockBytes = Encoding.UTF8.GetBytes("LOCK");
+                var unlockBytes = Encoding.UTF8.GetBytes("UNLOCK");
                 for (var i = 0; i < data.Length - 4; i++)
                 {
-                    if (data.AsSpan(i, 4).SequenceEqual(lockStr) ||
-                        data.AsSpan(i, 4).SequenceEqual(unlockStr))
+                    var match = true;
+                    for (var k = 0; k < 4; k++)
+                    {
+                        if (data[i + k] != lockBytes[k] && data[i + k] != unlockBytes[k])
+                        {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match)
                     {
                         Array.Clear(data, i, 4);
                         Logging.Log($"Cleared pattern at offset 0x{i:X}");
@@ -156,7 +176,7 @@ internal sealed class UnlockBootloaderCommand
             else
             {
                 Logging.Log("=== UNLOCKING bootloader ===");
-                // Apply unlock pattern
+                // Apply unlock pattern from EDLUnlock/Giovix92
                 data[0x10] = 0x01;
                 data[0x11] = 0x00;
                 data[0x12] = 0x00;
@@ -165,9 +185,8 @@ internal sealed class UnlockBootloaderCommand
                 data[0x15] = 0x00;
                 data[0x16] = 0x00;
                 data[0x17] = 0x00;
-                // Also set byte at 0x08 (secondary unlock pattern)
                 data[0x08] = 0x01;
-                Logging.Log("Unlock pattern applied (offset 0x10-0x17, 0x08 → 0x01).");
+                Logging.Log("Unlock pattern applied (offset 0x10-0x17, 0x08 to 0x01).");
             }
 
             // Write back patched devinfo
