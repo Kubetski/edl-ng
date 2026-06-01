@@ -2,7 +2,7 @@
 
 **A modern, user-friendly tool for interacting with Qualcomm devices in Emergency Download (EDL) mode.**
 
-Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols, enabling device flashing, partition management, bootloader unlocking, and low-level device interaction.
+Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols, enabling device flashing, partition management, bootloader unlocking, Knox Guard removal, and low-level device interaction.
 
 ## Features
 
@@ -25,6 +25,7 @@ Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols,
 * **Bootloader Unlock:** Unlock bootloader via devinfo partition edit over EDL.
 * **OEM Unlock:** Enable OEM unlock toggle via EDL partition patch.
 * **KG Scanner:** Scan LUNs for Samsung Knox Guard related partitions.
+* **KG Clear:** Multi-method Knox Guard removal via partition patching, token zeroing, and bootloader unlock.
 * **Flexible Device Detection:**
   * Specify USB VID/PID.
   * Uses COM ports on Windows or LibUsbDotNet (for all platforms, especially Linux/macOS).
@@ -52,13 +53,14 @@ Built with .NET, `edl-ng` provides tools for both Sahara and Firehose protocols,
 | `rawprogram <patterns>` | Flash using rawprogram XML files |
 | `reset` | Reset/power off device |
 
-### Bootloader & Security Commands (New)
+### Bootloader, KG & Security Commands
 | Command | Description |
 |---------|-------------|
 | `unlock-bootloader` | Unlock/relock bootloader via devinfo partition edit |
 | `oem-unlock` | Attempt OEM unlock enable via Sahara/Firehose |
 | `kg scan` | Scan all LUNs for KG-related partitions |
 | `kg read <partition>` | Read and display KG state from a partition |
+| `kg-clear` | Clear/remove Samsung KG lock via multiple EDL methods |
 
 ## Usage
 
@@ -80,96 +82,173 @@ edl-ng [global-options] <command> [command-options-and-arguments]
 | `--img-size` | Image size for host device mode |
 | `--radxa-wos-platform` | Radxa WoS backend (Windows only) |
 
-## Bootloader Unlock Guide
+## Samsung Knox Guard (KG) Bypass Guide
 
-### Method 1: DevInfo Partition Unlock (Recommended)
+### Understanding KG States
+
+KG state is stored in the bootloader and read from RPMB (TrustZone) during boot. Displayed in Download Mode:
+
+| State | Value | Meaning |
+|-------|-------|---------|
+| **Prenormal** | 0 | Factory state; carrier can still activate a remote lock |
+| **Checking** | 1 | Device has been online; carrier is verifying KG status |
+| **Completed** / **Active** | 1 (alt flag) | Normal operational state |
+| **Locked** | 2 | KG lock is active; device is restricted |
+| **BROKEN** / **Error** | 3 | Tampered state from partition edits — device needs bypass |
+
+### Method 1: Automated KG Clear (Recommended)
+
+Uses all available EDL techniques to remove/bypass KG lock:
+
+```bash
+# Run all methods (param patch + persist zero + devinfo unlock):
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg-clear
+
+# Specific method only:
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg-clear --method param-patch --state 3
+
+# Multi-pass (Chimera-style, run 3 times with reboots):
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg-clear --method multi-pass
+```
+
+**What kg-clear does:**
+1. **Param partition patch** — Searches for `kg_state=`, `knox_guard`, `locked` strings in the param partition and modifies them. Sets KG state to PASS (3).
+2. **Persist/Persdata zeroing** — Finds KG-related tokens in persist/persdata partitions and nulls them out.
+3. **DevInfo unlock** — Applies bootloader unlock via devinfo partition edit.
+4. **Multi-pass mode** — Chimera-style 3-pass approach: apply patches, reboot to unlock bootloader, reconnect EDL and re-apply.
+
+### Method 2: DevInfo Partition Unlock
 
 **Works on:** Most Qualcomm devices with devinfo partition (pre-2018 MSM89xx, some newer).
-**Risk:** Low — only modifies the devinfo partition.
+**Risk:** Low.
 
 ```bash
-# 1. Put device in EDL mode (9008)
-# 2. Upload loader and unlock bootloader:
 edl-ng --loader prog_firehose_ddr.elf --memory UFS unlock-bootloader
-
-# 3. Verify: Check Developer Options for OEM Unlock toggle
-# 4. Reboot to Download Mode and confirm unlock:
-adb reboot download
-# Long press Vol Up at the unlock prompt
 ```
 
-**How it works:**
-The `devinfo` partition stores bootloader unlock state at specific offsets:
-- **Offset 0x10:** `01 00 00 00 00 00 00 00` = unlocked (byte 0x10 = 0x01)
-- **Offset 0x10:** `00 00 00 00 00 00 00 00` = locked (byte 0x10 = 0x00)
-- **Offset 0x08:** Set to `0x01` as secondary unlock flag
+**How it works:** The `devinfo` partition stores bootloader unlock state at offset 0x10 (0x01 = unlocked, 0x00 = locked). The command reads, applies unlock pattern, and writes back.
 
-The command reads the devinfo partition, applies the unlock pattern, and writes it back.
-
-**If unlock-bootloader says already unlocked but OEM toggle is missing:**
-```bash
-edl-ng --loader prog_firehose_ddr.elf --memory UFS unlock-bootloader --force
-```
-
-**To relock:**
-```bash
-edl-ng --loader prog_firehose_ddr.elf --memory UFS unlock-bootloader --relock
-```
-
-### Method 2: OEM Unlock via EDL (Experimental)
-
-**Works on:** Some Samsung/OnePlus devices.
-**Risk:** Moderate — may trigger EDL auth errors on newer SoCs.
+### Method 3: OEM Unlock via EDL
 
 ```bash
 edl-ng --loader prog_firehose_ddr.elf --memory UFS oem-unlock
 ```
 
-This attempts to enable the OEM Unlock toggle by:
-1. Patching the devinfo partition (same as Method 1)
-2. Attempting Sahara EXECUTE command for OEM unlock (on compatible Sahara v2 devices)
+Patches the devinfo partition to enable the OEM Unlock toggle in Developer Options.
 
-### Method 3: KG Neutralization via Partition Edit (Samsung)
+### Method 4: Param Partition Manual Edit
 
-**Works on:** Samsung devices with KG lock (states 0-3).
-**Risk:** Moderate — writing to wrong partition can brick.
-
-#### Step 1: Scan for KG partitions
 ```bash
+# 1. Scan for KG partitions
 edl-ng --loader prog_firehose_ddr.elf --memory UFS kg scan
-```
 
-#### Step 2: Read KG state from a specific partition
-```bash
-edl-ng --loader prog_firehose_ddr.elf --memory UFS kg read persist
+# 2. Read KG state
 edl-ng --loader prog_firehose_ddr.elf --memory UFS kg read param
-edl-ng --loader prog_firehose_ddr.elf --memory UFS kg read devinfo
-```
 
-#### Step 3: Manually edit KG state (advanced)
-```bash
-# Read param partition
+# 3. Read and edit param locally
 edl-ng --loader prog_firehose_ddr.elf --memory UFS read-part param param.bin
 
-# Hex-edit param.bin: change "kg_state=2" to "kg_state=3" (BROKEN)
-# Or null out the knox_guard entries
+# 4. Hex-edit param.bin (search for kg_state, knox_guard, locked strings)
 
-# Write back
+# 5. Write back
 edl-ng --loader prog_firehose_ddr.elf --memory UFS write-part param param.bin
 ```
 
-### Method 4: RPMB Clear via Signed Loader (Paid Tools Only)
+### Method 5: RPMB Clear (Paid Tools Method)
 
-**Works on:** All Samsung devices (hardware-level fix).
-**Risk:** Low if using genuine tool.
+RPMB (Replay Protected Memory Block) stores KG tokens at the hardware level in eMMC/UFS. This is where the authoritative KG state lives on modern Samsung devices. Clearing RPMB removes KG completely.
 
-RPMB (Replay Protected Memory Block) stores KG tokens at the hardware level. Clearing RPMB removes KG completely, but requires a signed Samsung loader which is only available through paid tools:
-- Chimera Tool (~$120/yr)
-- TSM Tool Pro (~$80/yr)
-- SamsungTool (~$100/yr)
-- Octoplus Samsung (~$90/yr)
+**How RPMB works:**
+- Protected by a 256-bit HMAC-SHA256 authentication key fused into the SoC.
+- Requires TrustZone SMC (Secure Monitor Call) or authenticated Firehose commands to write.
+- Stores: anti-rollback counters, Knox security keys, bootloader unlock state.
+- On UFS devices, the RPMB write counter can only be incremented, never reset.
 
-**Free alternative:** The devinfo unlock method (Method 1) combined with KnoxPatch (root module) achieves the same result without clearing RPMB.
+**Paid tools that can clear RPMB:**
+| Tool | Price | Method |
+|------|-------|--------|
+| Chimera Tool | ~$120/yr | Signed Samsung loader + multi-pass EDL |
+| TSM Tool Pro | ~$80/yr | EDL + combination firmware QR |
+| SamsungTool | ~$100/yr | EDL + KG Removal All FIXED |
+| Octoplus Samsung | ~$90/yr | Partition Manager via EDL |
+| F64 / Medusa / UFI | Varies | Physical ISP direct UFS access |
+
+**Free alternatives (without RPMB clear):**
+- The `kg-clear` command (Method 1) combined with KnoxPatch (Magisk module) bypasses KG at the OS level without clearing RPMB.
+- The VBmeta rename exploit (Method 6) can bypass RPMB write protection on some SoCs.
+
+### Method 6: VBmeta Rename Exploit (Advanced)
+
+**Works on:** Qualcomm devices with ABL (Android Bootloader) verified boot.
+**Risk:** HIGH — can brick if done incorrectly.
+
+Exploits Qualcomm ABL protocol: rename `vbmeta` so ABL takes NO_AVB path, Keymaster TA no longer blocks RPMB writes, allowing `is_unlocked=1` and `is_unlock_critical=1` to be written.
+
+```bash
+# Reference implementation:
+# github.com/atlas4381/qualcomm_avb_exploit_poc
+
+# The kg-clear --method vbmeta-exploit option outputs step-by-step instructions
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg-clear --method vbmeta-exploit
+```
+
+**Steps:**
+1. Read GPT, find vbmeta partition
+2. Rename vbmeta -> vbmeta_bak via GPT write
+3. Reboot to bootloader (ABL takes NO_AVB path)
+4. Write `is_unlocked=1` to RPMB DeviceInfo
+5. Restore vbmeta name in GPT
+
+### Method 7: Chimera-Style Multi-Pass EDL
+
+**Works on:** All Samsung Qualcomm devices.
+**Risk:** Moderate.
+
+ChimeraTool uses a documented 3-pass EDL procedure:
+1. **Pass 1**: Connect EDL, run KG removal procedure (fails — bootloader locked). Cancel, unlock bootloader via Download Mode.
+2. **Pass 2**: Reconnect EDL, run KG removal again. Rebooting to system.
+3. **Pass 3**: Reconnect EDL, run KG removal a third time. Finishes successfully.
+
+```bash
+# Our implementation:
+edl-ng --loader prog_firehose_ddr.elf --memory UFS kg-clear --method multi-pass
+```
+
+Run the command 2-3 times, rebooting the device between each pass.
+
+### Method 8: ADB-Based KG Neutralization (Root Required)
+
+If the device can boot with ADB:
+
+```bash
+# Disable KG client service
+adb shell pm disable-user --user 0 com.samsung.android.kgclient
+adb shell pm uninstall --user 0 com.samsung.android.kgclient
+
+# Install KnoxPatch Magisk module for permanent bypass
+# github.com/KnoxPatch/KnoxPatch
+```
+
+Reference: github.com/yinkev/Fold4-KG-Unlock
+
+## KG State Map
+
+### Partitions That Store KG Data
+
+| Partition | LUN (Typical) | Role |
+|-----------|--------------|------|
+| `param` | LUN 2 | KG state string, boot flags |
+| `persist` | LUN 2 | Persistent KG enrollment tokens |
+| `persdata` | LUN 2 | Secondary KG configuration |
+| `devinfo` | LUN 0 | Bootloader unlock state |
+| `RPMB` | HW-protected | Authoritative KG state, ARB version |
+
+### UFS LUN Layout (Typical Samsung Qualcomm)
+- **LUN 0**: GPT + XBL, ABL, TZ, devinfo (boot chain)
+- **LUN 1**: modem, fsg
+- **LUN 2**: param, persist, persdata (KG-relevant)
+- **LUN 4**: metadata, frp
+- **LUN 5**: userdata
 
 ## Putting Device in EDL Mode
 
@@ -187,32 +266,32 @@ Verify: Device Manager shows "Qualcomm HS-USB QDLoader 9008" or "QUSB_BULK".
 
 ## Prerequisites
 
-* **.NET 8/9 SDK** (no need to install .NET runtime if using pre-built binaries).
+* **.NET 8 SDK**.
 * **Qualcomm USB Drivers:**
-  * **Windows:** Both Qualcomm® USB Driver (QUD) and WinUSB driver (Zadig) are supported.
-  * **Linux/macOS:** `libusb` is used. You may also need to configure udev rules on Linux to allow user access to the device.
-* **Firehose Programmer:** An appropriate `.elf` programmer file for your specific device (e.g., `prog_firehose_*.elf` or `xbl_s_devprg_ns.melf`).
+  * **Windows:** Both Qualcomm USB Driver (QUD) and WinUSB driver (Zadig) are supported.
+  * **Linux/macOS:** `libusb` is used. May need udev rules for user access.
+* **Firehose Programmer:** An appropriate `.elf` file for your specific device (e.g., `prog_firehose_*.elf` or `xbl_s_devprg_ns.melf`).
 
 ## Building
-
-1. Clone the repository.
-2. Ensure you have the .NET 8 SDK installed.
-3. Build:
 
 ```bash
 dotnet build QCEDL.CLI\QCEDL.CLI.csproj
 ```
 
-4. The executable `edl-ng` will be located in `QCEDL.CLI/bin/<Configuration>/net8.0/`.
+The executable `edl-ng` will be in `QCEDL.CLI/bin/<Configuration>/net8.0/`.
 
 ## Resources & References
 
-- [Aleph Security: Exploiting Qualcomm EDL Programmers](https://alephsecurity.com/2018/01/22/qualcomm-edl-1/) — Foundational research on EDL/Firehose/Sahara
+- [Aleph Security: Exploiting Qualcomm EDL Programmers](https://alephsecurity.com/2018/01/22/qualcomm-edl-1/) — Foundational EDL/Firehose/Sahara research
 - [Giovix92/EDLUnlock](https://github.com/Giovix92/EDLUnlock) — Batch-based devinfo unlock (MSM8953)
 - [lowendmains/edlunlock](https://github.com/lowendmains/edlunlock) — Shell-based devinfo unlock
-- [bkerler/edl](https://github.com/bkerler/edl) — Python EDL tool (inspiration)
+- [bkerler/edl](https://github.com/bkerler/edl) — Python EDL tool
 - [gus33000/QCEDL.NET](https://github.com/gus33000/QCEDL.NET) — Original .NET EDL implementation
+- [atlas4381/qualcomm_avb_exploit_poc](https://github.com/atlas4381/qualcomm_avb_exploit_poc) — RPMB DeviceInfo write via vbmeta rename
+- [yinkev/Fold4-KG-Unlock](https://github.com/yinkev/Fold4-KG-Unlock) — ADB-based kgclient neutralizer
+- [KnoxPatch](https://github.com/KnoxPatch/KnoxPatch) — Magisk module for permanent KG bypass
+- [Alephgsm/SAMSUNG-EDL-Loaders](https://github.com/Alephgsm/SAMSUNG-EDL-Loaders) — Samsung EDL firehose loader collection
 
 ## License
 
-This project is licensed under the MIT license.
+MIT license.

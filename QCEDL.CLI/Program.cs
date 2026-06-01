@@ -142,6 +142,7 @@ rootCommand.AddCommand(RawProgramCommand.Create(globalOptionsBinder));
 rootCommand.AddCommand(UnlockBootloaderCommand.Create(globalOptionsBinder));
 rootCommand.AddCommand(OemUnlockCommand.Create(globalOptionsBinder));
 rootCommand.AddCommand(KgCommand.Create(globalOptionsBinder));
+rootCommand.AddCommand(KgClearCommand.Create(globalOptionsBinder));
 // ... etc ...
 
 // --- Default Handler (Show Help if no command given) ---
